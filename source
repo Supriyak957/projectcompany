@@ -1,0 +1,285 @@
+1.1 Setup and Dependencies
+
+First, set up a Node.js project with the required dependencies.
+mkdir ecommerce-app
+cd ecommerce-app
+npm init -y
+npm install express mongoose bcryptjs jsonwebtoken cors dotenv
+npm install --save-dev nodemon
+
+Set up basic structure:
+ecommerce-app/
+├── models/
+│   ├── User.js
+│   ├── Product.js
+│   └── Cart.js
+├── routes/
+│   ├── auth.js
+│   ├── product.js
+│   └── cart.js
+├── middleware/
+│   └── authMiddleware.js
+├── server.js
+├── .env
+├── package.json
+└── README.md
+
+Step 2: Backend Code
+1.1 Database Models (MongoDB & Mongoose)
+User Model (models/User.js): Handles users.
+
+// models/User.js
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    isAdmin: { type: Boolean, default: false },
+});
+
+userSchema.pre('save', async function (next) {
+    if (!this.isModified('password')) next();
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+});
+
+module.exports = mongoose.model('User', userSchema);
+
+Product Model (models/Product.js): Defines product structure.
+// models/Product.js
+const mongoose = require('mongoose');
+
+const productSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    description: { type: String, required: true },
+    price: { type: Number, required: true },
+    image: { type: String },
+    category: { type: String },
+    stock: { type: Number, default: 0 },
+});
+
+module.exports = mongoose.model('Product', productSchema);
+
+
+Cart Model (models/Cart.js): Handles shopping cart structure.
+
+// models/Cart.js
+const mongoose = require('mongoose');
+
+const cartSchema = new mongoose.Schema({
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    items: [
+        {
+            productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+            quantity: { type: Number, default: 1 },
+        },
+    ],
+    totalPrice: { type: Number, default: 0 },
+});
+
+module.exports = mongoose.model('Cart', cartSchema);
+
+
+1.2 Authentication Middleware (middleware/authMiddleware.js)
+
+// middleware/authMiddleware.js
+const jwt = require('jsonwebtoken');
+
+const authMiddleware = (req, res, next) => {
+    const token = req.header('Authorization');
+    if (!token) return res.status(401).json({ message: 'No token, authorization denied' });
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        res.status(401).json({ message: 'Token is not valid' });
+    }
+};
+
+const adminMiddleware = (req, res, next) => {
+    if (req.user && req.user.isAdmin) {
+        next();
+    } else {
+        res.status(403).json({ message: 'Admin resource, access denied' });
+    }
+};
+
+module.exports = { authMiddleware, adminMiddleware };
+
+
+Auth Routes (routes/auth.js)
+
+// routes/auth.js
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const { authMiddleware } = require('../middleware/authMiddleware');
+
+const router = express.Router();
+
+// Register
+router.post('/register', async (req, res) => {
+    const { name, email, password } = req.body;
+    try {
+        const user = new User({ name, email, password });
+        await user.save();
+        res.status(201).json({ message: 'User registered successfully' });
+    } catch (error) {
+        res.status(400).json({ message: 'User registration failed', error });
+    }
+});
+
+// Login
+router.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+    try {
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ message: 'User not found' });
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+
+        const token = jwt.sign({ id: user._id, isAdmin: user.isAdmin }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        res.json({ token });
+    } catch (error) {
+        res.status(500).json({ message: 'Login failed', error });
+    }
+});
+
+module.exports = router;
+
+
+
+
+1.4 Product Routes (routes/product.js)
+
+// routes/product.js
+const express = require('express');
+const Product = require('../models/Product');
+const { authMiddleware, adminMiddleware } = require('../middleware/authMiddleware');
+
+const router = express.Router();
+
+// Get all products
+router.get('/', async (req, res) => {
+    try {
+        const products = await Product.find();
+        res.json(products);
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch products' });
+    }
+});
+
+// Get product by id
+router.get('/:id', async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.id);
+        if (!product) return res.status(404).json({ message: 'Product not found' });
+        res.json(product);
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch product details' });
+    }
+});
+
+// Add new product (admin only)
+router.post('/', authMiddleware, adminMiddleware, async (req, res) => {
+    const { name, description, price, image, category, stock } = req.body;
+    try {
+        const product = new Product({ name, description, price, image, category, stock });
+        await product.save();
+        res.status(201).json(product);
+    } catch (error) {
+        res.status(400).json({ message: 'Failed to add product', error });
+    }
+});
+
+module.exports = router;
+
+1.5 Shopping Cart Routes (routes/cart.js)
+
+// routes/cart.js
+const express = require('express');
+const Cart = require('../models/Cart');
+const { authMiddleware } = require('../middleware/authMiddleware');
+
+const router = express.Router();
+
+// Get user's cart
+router.get('/', authMiddleware, async (req, res) => {
+    try {
+        const cart = await Cart.findOne({ userId: req.user.id });
+        if (!cart) return res.status(404).json({ message: 'Cart not found' });
+        res.json(cart);
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch cart' });
+    }
+});
+
+// Add item to cart
+router.post('/', authMiddleware, async (req, res) => {
+    const { productId, quantity } = req.body;
+    try {
+        let cart = await Cart.findOne({ userId: req.user.id });
+        if (!cart) cart = new Cart({ userId: req.user.id, items: [] });
+
+        const itemIndex = cart.items.findIndex((item) => item.productId == productId);
+        if (itemIndex > -1) {
+            cart.items[itemIndex].quantity += quantity;
+        } else {
+            cart.items.push({ productId, quantity });
+        }
+
+        await cart.save();
+        res.json(cart);
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to add item to cart', error });
+    }
+});
+
+// Remove item from cart
+router.delete('/:id', authMiddleware, async (req, res) => {
+    try {
+        const cart = await Cart.findOne({ userId: req.user.id });
+        if (!cart) return res.status(404).json({ message: 'Cart not found' });
+
+        cart.items = cart.items.filter((item) => item.productId != req.params.id);
+        await cart.save();
+        res.json(cart);
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to remove item from cart' });
+    }
+});
+
+module.exports = router;
+
+1.6 Main Server (server.js)
+
+// server.js
+const express = require('express');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const cors = require('cors');
+
+const authRoutes = require('./routes/auth');
+const productRoutes = require('./routes/product');
+const cartRoutes = require('./routes/cart');
+
+dotenv.config();
+
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/products', productRoutes);
+app.use(‘/api/cart
+
+
